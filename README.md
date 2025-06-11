@@ -1,6 +1,6 @@
 ### 使用
 ```shell
-go run ./cmd/log2lark-helper.go --webhook-url=https://open.larksuite.com/open-apis/bot/v2/hook/30fd72a8-28fc-4f1d-9c17-a70f6994a7ab --webhook-secret=e2F1GbrPu8k8QmctMMBWUh --log-files=/Users/awen.liang/Awen/Dev/echo_maker_service/cmd/echo_maker_service/logs/kratos.log --match=ERROR
+go run ./cmd/log2lark-helper.go --webhook-url=https://open.larksuite.com/open-apis/bot/v2/hook/xxxxxx-xxxx-xxxx --webhook-secret=xxxxx --log-files=/Users/awen.liang/Awen/Dev/echo_maker_service/cmd/echo_maker_service/logs/kratos.log --match=ERROR
 ```
 
 ### 参数说明 
