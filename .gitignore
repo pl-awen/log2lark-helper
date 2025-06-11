@@ -30,5 +30,6 @@ monitoring_offset.json
 temp
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+build
