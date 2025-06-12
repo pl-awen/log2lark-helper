@@ -26,7 +26,10 @@ go.work.sum
 
 # env file
 .env
+monitoring_offset.json
+temp
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+build
