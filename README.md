@@ -22,20 +22,21 @@ go run ./cmd/log2lark-helper.go --webhook-url=https://open.larksuite.com/open-ap
 
 ### 命令行参数
 
-| 参数                 | 描述                           | 默认值                                                                                                                                      | 示例                                                                      |
-|--------------------|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------|
-| `--log-files`      | 逗号分隔的日志文件路径（必填）              | 无                                                                                                                                        | `/var/log/app1.log,/var/log/app2.log`                                   |
-| `--webhook-url`    | Lark Webhook URL（必填）         | 无                                                                                                                                        | `https://open.feishu.cn/open-apis/bot/v2/hook/xxx`                      |
-| `--webhook-secret` | Webhook 签名密钥                 | 空                                                                                                                                        | `your-secret-key`                                                       |
-| `--match`          | 匹配日志级别的正则表达式                 | `ERROR`                                                                                                                                  | `ERROR\|WARN`                                                           |
-| `--offset-file`    | 偏移量存储文件                      | `.offset.json`                                                                                                                           | `/path/to/offset.json`                                                  |
-| `--log-regex`      | 解析日志行的正则表达式                  | `^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})$`                                                                      | `^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\s+(\w+)\s+(\{.*\})$` |
-| `--time-index`     | 时间戳捕获组索引                     | 1                                                                                                                                        | `1`                                                                     |
-| `--level-index`    | 日志级别捕获组索引                    | 2                                                                                                                                        | `2`                                                                     |
-| `--content-index`  | JSON 内容捕获组索引                 | 3                                                                                                                                        | `3`                                                                     |
-| `--content-fields` | JSON 内容字段                    | file,timestamp,level,service.id,msg,caller,trace.id,span.id                                                                              |
-| `--message-format` | 告警消息模板                       | `🚨 错误日志告警\n文件: {file}\n时间: {timestamp}\n级别: {level}\n服务: {service}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}` | `警报: {file} 在 {timestamp} 发生 {level} 错误: {msg}`                         |
-| `--start-line`     | 逗号分隔的起始行数，与 `--log-files` 对应 | 空（从头开始）                                                                                                                                  | `100,200`                                                               |
+| 参数                   | 描述                             | 默认值                                                                                                                                   | 示例                                                                       |
+|----------------------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| `--log-files`        | 逗号分隔的日志文件路径（与--watch-dirs其一必填） | 无                                                                                                                                     | `/var/log/app1.log,/var/log/app2.log`                                    |
+| `--watch-dirs`       | 逗号分隔的日志目录路径（与--log-files其一必填）  | 无                                                                                                                                     | `/var/log/app1,/var/log/app2`                                            |
+| `--webhook-url`      | Lark Webhook URL（必填）           |  无                                                                                                                                    | `https://open.feishu.cn/open-apis/bot/v2/hook/xxx`                       |
+| `--webhook-secret`   | Webhook 签名密钥                   | 空                                                                                                                                     | `your-secret-key`                                                        |
+| `--match`            | 匹配日志级别的正则表达式                   | `ERROR`                                                                                                                               | `ERROR\|WARN`                                                            |
+| `--offset-file`      | 偏移量存储文件                        | `.offset.json`                                                                                                                        | `/path/to/offset.json`                                                   |
+| `--log-regex`        | 解析日志行的正则表达式                    | `^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})$`                                                                   | `^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\s+(\w+)\s+(\{.*\})$`  |
+| `--time-index`       | 时间戳捕获组索引                       | 1                                                                                                                                     | `1`                                                                      |
+| `--level-index`      | 日志级别捕获组索引                      | 2                                                                                                                                     | `2`                                                                      |
+| `--content-index`    | JSON 内容捕获组索引                   | 3                                                                                                                                     | `3`                                                                      |
+| `--content-fields`   | JSON 内容字段                      | file,timestamp,level,service.id,msg,caller,trace.id,span.id                                                                           |
+| `--message-format`   | 告警消息模板                         | `🚨 错误日志告警\n文件: {file}\n时间: {timestamp}\n级别: {level}\n服务: {service}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}` | `警报: {file} 在 {timestamp} 发生 {level} 错误: {msg}`                          |
+| `--last-start-line`  | 逗号分隔的起始行数，与 `--log-files` 对应   | 空（从末尾开始）                                                                                                                              | `100,200`                                                                |
 
 **--content-fields 消息模板占位符示例**：
 - `{file}`：日志文件路径
@@ -72,7 +73,7 @@ go run ./cmd/log2lark-helper.go --webhook-url=https://open.larksuite.com/open-ap
    After=network.target
 
    [Service]
-   ExecStart=/xxxx/yyy/log2lark-helper --log-files=/var/log/app1.log,/var/log/app2.log --webhook-url=https://open.feishu.cn/open-apis/bot/v2/hook/xxx --webhook-secret=your-secret-key --match=ERROR --offset-file=/xxxx/yyy/offset.json --start-line=100,200
+   ExecStart=/xxxx/yyy/log2lark-helper --log-files=/var/log/app1.log,/var/log/app2.log --webhook-url=https://open.feishu.cn/open-apis/bot/v2/hook/xxx --webhook-secret=your-secret-key --match=ERROR --offset-file=/xxxx/yyy/offset.json --last-start-line=50,50
    Restart=always
    User=nobody
    Group=nogroup

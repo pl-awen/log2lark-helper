@@ -22,18 +22,20 @@ import (
 
 // AppConfig 程序配置
 type AppConfig struct {
-	LogFiles      []string
-	WebhookURL    string
-	WebhookSecret string
-	MatchRule     string
-	OffsetFile    string
-	LogRegex      string
-	TimeIndex     int
-	LevelIndex    int
-	ContentIndex  int
-	ContentMaps   []string
-	MessageFormat string
-	StartLines    []int
+	LogFiles               []string
+	WatchDirs              []string
+	WatchDirFileSuffixList []string
+	WebhookURL             string
+	WebhookSecret          string
+	LastStartLines         []int
+	MatchRule              string
+	OffsetFile             string
+	LogRegex               string
+	TimeIndex              int
+	LevelIndex             int
+	ContentIndex           int
+	ContentMaps            []string
+	MessageFormat          string
 }
 
 type App struct {
@@ -63,9 +65,13 @@ func (app *App) Start() {
 		logrus.Fatal("Index values must be positive integers")
 	}
 
-	offsetStore := NewOffsetStore()
-	if err := offsetStore.Load(app.config.OffsetFile); err != nil {
+	offsetStore := NewOffsetStore(app.config.OffsetFile)
+	if err = offsetStore.Load(); err != nil {
 		logrus.Warnf("Failed to load offsets from %s: %v", app.config.OffsetFile, err)
+	}
+
+	if err = offsetStore.checkFileExist(); err != nil {
+		logrus.Warnf("Failed to check file offset from %s: %v", app.config.OffsetFile, err)
 	}
 
 	sigManager := NewSignatureManager(app.config.WebhookSecret)
@@ -83,22 +89,51 @@ func (app *App) Start() {
 		<-sigCh
 		logger.Info("Received shutdown signal, stopping...")
 		cancel()
-		if err := offsetStore.Save(app.config.OffsetFile); err != nil {
+		if err := offsetStore.Save(); err != nil {
 			logger.Errorf("Failed to save offsets to %s: %v", app.config.OffsetFile, err)
 		}
 	}()
 
-	// 启动监控
+	// 发送飞书
+	sendLarkManager := NewSendToLarkManager(app.config.WebhookURL, sigManager)
+
+	// 创建监听管理
+	mparms := MonitorParams{
+		LevelRe:                levelRe,
+		LogRe:                  logRe,
+		WatchDirFileSuffixList: app.config.WatchDirFileSuffixList,
+		TimeIndex:              app.config.LevelIndex,
+		LevelIndex:             app.config.LevelIndex,
+		ContentIndex:           app.config.ContentIndex,
+		ContentMaps:            app.config.ContentMaps,
+		MessageFormat:          app.config.MessageFormat,
+	}
+	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, logger)
+
+	// 启动文件监控
 	var wg sync.WaitGroup
 	for i, logFile := range app.config.LogFiles {
 		wg.Add(1)
-		go func(file string, startLine int) {
+		go func(file string, lastStartLine int) {
 			defer wg.Done()
-			app.monitorLogFile(ctx, file, startLine, app.config, levelRe, logRe, offsetStore, sigManager, logger)
-		}(logFile, app.config.StartLines[i])
+			monitorManager.StartFileMonitor(ctx, file, lastStartLine)
+		}(logFile, app.config.LastStartLines[i])
 	}
 
+	// 启动目录监听
+	for _, dir := range app.config.WatchDirs {
+		wg.Add(1)
+		go func(ctx context.Context, directory string, wg *sync.WaitGroup) {
+			defer wg.Done()
+			monitorManager.StartWatchDirectory(ctx, directory, wg)
+		}(ctx, dir, &wg)
+	}
+
+	logrus.Info("Log monitor started")
 	wg.Wait()
+	if err = offsetStore.Save(); err != nil {
+		logrus.Info("Save offsets to file failed: %v", err)
+	}
 }
 
 // formatMessage 根据模板格式化消息
@@ -150,7 +185,6 @@ func (app *App) formatMessage(template, logFile, timestamp, level string, conten
 
 // monitorLogFile 监控单个日志文件
 func (app *App) monitorLogFile(ctx context.Context, logFile string, startLine int, config AppConfig, levelRe, logRe *regexp.Regexp, offsetStore *OffsetStore, sigManager *SignatureManager, logger *logrus.Logger) {
-
 	// 确定起始偏移量
 	var offset = offsetStore.Get(logFile)
 	if startLine > 0 {
@@ -189,7 +223,7 @@ func (app *App) monitorLogFile(ctx context.Context, logFile string, startLine in
 			} else {
 				offsetStore.Set(logFile, offset)
 			}
-			if err := offsetStore.Save(config.OffsetFile); err != nil {
+			if err := offsetStore.Save(); err != nil {
 				logger.Errorf("Failed to save offsets for %s: %v", logFile, err)
 			}
 			return
