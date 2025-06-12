@@ -13,9 +13,10 @@ func main() {
 	// 解析命令行参数
 	logFiles := flag.String("log-files", "", "Comma-separated log file paths (e.g., /var/log/app1.log,/var/log/app2.log)")
 	watchDirs := flag.String("watch-dirs", "", "The comma-separated path of the listening directory (e.g., /var/log1/,/var/log2/)")
-	watchDirFileSuffixs := flag.String("watch-dir-file-suffixs", ".log", "Listen for the file suffixes in the directory (e.g., .log,.logger)")
+	watchDirFileSuffix := flag.String("watch-dir-file-suffix", ".log", "Listen for the file suffixes in the directory (e.g., .log,.logger)")
 	webhookURL := flag.String("webhook-url", "", "Webhook URL")
 	webhookSecret := flag.String("webhook-secret", "", "Webhook secret key")
+	reportRateTimeSecond := flag.String("report-rate", "1", "Report the rate interval, in seconds")
 	matchRule := flag.String("match", "ERROR", "Regular expression to match log level")
 	offsetFile := flag.String("offset-file", "monitoring_offset.json", "File to store log offsets")
 	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})`, "Regular expression to parse log line")
@@ -80,8 +81,14 @@ func main() {
 
 	// 监听目录下的后续
 	var watchDirFileSuffixList []string
-	if *watchDirFileSuffixs != "" {
-		watchDirFileSuffixList = strings.Split(*watchDirFileSuffixs, ",")
+	if *watchDirFileSuffix != "" {
+		watchDirFileSuffixList = strings.Split(*watchDirFileSuffix, ",")
+	}
+
+	rrTimeSecond, err := strconv.Atoi(*reportRateTimeSecond)
+	if err != nil {
+		logrus.Errorf("Invalid report-rate value: %s (should be an integer)", *reportRateTimeSecond)
+		return
 	}
 
 	app := internal.NewApp(internal.AppConfig{
@@ -98,6 +105,7 @@ func main() {
 		ContentMaps:            strings.Split(*contentFields, ","),
 		MessageFormat:          *messageFormat,
 		LastStartLines:         lastStartLines,
+		ReportRateTimeSecond:   rrTimeSecond,
 	})
 	app.Start()
 

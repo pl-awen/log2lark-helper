@@ -3,6 +3,7 @@ package internal
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
 	"fmt"
 	"github.com/hpcloud/tail"
 	"github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ type MonitorManager struct {
 	monitors          sync.Map // map[string]context.CancelFunc
 	params            MonitorParams
 	sendToLarkManager *SendToLarkManager
+	memoryCache       *MemoryCache
 	logger            *logrus.Logger
 	offsetStore       *OffsetStore
 }
@@ -37,11 +39,12 @@ type MonitorParams struct {
 }
 
 // NewMonitorManager ..
-func NewMonitorManager(params MonitorParams, sendToLarkManager *SendToLarkManager, offsetStore *OffsetStore, logger *logrus.Logger) *MonitorManager {
+func NewMonitorManager(params MonitorParams, sendToLarkManager *SendToLarkManager, offsetStore *OffsetStore, memoryCache *MemoryCache, logger *logrus.Logger) *MonitorManager {
 	return &MonitorManager{
 		params:            params,
 		sendToLarkManager: sendToLarkManager,
 		offsetStore:       offsetStore,
+		memoryCache:       memoryCache,
 		logger:            logger,
 	}
 }
@@ -281,6 +284,24 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				continue
 			}
 
+			// 使用缓存限制频率
+			if mm.memoryCache != nil {
+				key := mm.computeMD5(jsonPart)
+				content, err := mm.memoryCache.GetCache(ctx, key)
+				if err != nil {
+					mm.logger.Warnf("Failed to get content for %s: %v", key, err)
+				}
+
+				if content != "" {
+					continue
+				}
+
+				if err = mm.memoryCache.SetCache(ctx, key, jsonPart); err != nil {
+					mm.logger.Warnf("Failed to set content for %s: %v", key, err)
+					continue
+				}
+			}
+
 			message := formatMessage(matches, mm.params.MessageFormat, logFile, level, jsonPart, mm.params.ContentMaps)
 			if err = mm.sendToLarkManager.sendWithRetry(message); err != nil {
 				mm.logger.Errorf("Failed to send to Lark for %s: %v", logFile, err)
@@ -289,6 +310,12 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 			}
 		}
 	}
+}
+
+// computeMD5 计算 MD5
+func (mm *MonitorManager) computeMD5(text string) string {
+	hash := md5.Sum([]byte(text))
+	return fmt.Sprintf("%x", hash)
 }
 
 // getOffsetByLine 计算指定行数的偏移量

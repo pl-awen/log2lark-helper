@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // AppConfig 程序配置
@@ -18,6 +19,7 @@ type AppConfig struct {
 	WebhookURL             string
 	WebhookSecret          string
 	LastStartLines         []int
+	ReportRateTimeSecond   int
 	MatchRule              string
 	OffsetFile             string
 	LogRegex               string
@@ -82,6 +84,13 @@ func (app *App) Start() {
 	// 发送飞书
 	sendLarkManager := NewSendToLarkManager(app.config.WebhookURL, sigManager)
 
+	// 缓存
+	var memoryCache *MemoryCache
+	if app.config.ReportRateTimeSecond > 0 {
+		memoryCache = NewMemoryCache("LOG-CACHE", time.Duration(app.config.ReportRateTimeSecond), 10)
+		defer memoryCache.Close()
+	}
+
 	// 创建监听管理
 	mparms := MonitorParams{
 		LevelRe:                levelRe,
@@ -92,7 +101,7 @@ func (app *App) Start() {
 		ContentMaps:            app.config.ContentMaps,
 		MessageFormat:          app.config.MessageFormat,
 	}
-	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, logger)
+	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, memoryCache, logger)
 
 	// 启动文件监控
 	var wg sync.WaitGroup
