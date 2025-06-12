@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/sirupsen/logrus"
 	"monitoring-log-reporting-to-lark/internal"
+	"strconv"
 	"strings"
 )
 
@@ -18,7 +19,9 @@ func main() {
 	timeIndex := flag.Int("time-index", 1, "Capture group index for timestamp")
 	levelIndex := flag.Int("level-index", 2, "Capture group index for log level")
 	contentIndex := flag.Int("content-index", 3, "Capture group index for content (JSON)")
-	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {timestamp}\n级别: {level}\n服务: {service}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}", "Message format template")
+	contentFields := flag.String("content-fields", "file,timestamp,level,service.id,msg,caller,trace.id,span.id", "Content fields")
+	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {timestamp}\n级别: {level}\n服务: {service_id}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}", "Message format template")
+	startLine := flag.String("start-line", "", "The number of starting lines separated by commas, corresponding to log-files (such as 100,200)")
 
 	flag.Parse()
 
@@ -26,9 +29,32 @@ func main() {
 		logrus.Fatal("log-files and webhook-url are required")
 	}
 
-	// 解析日志文件路径
-	config := internal.Config{
-		LogFiles:      strings.Split(*logFiles, ","),
+	logFileList := strings.Split(*logFiles, ",")
+
+	// 解析起始行数
+	var startLines []int
+	if *startLine != "" {
+		lineStrs := strings.Split(*startLine, ",")
+		for i, lineStr := range lineStrs {
+			if i >= len(logFileList) {
+				logrus.Warnf("The number of start-lines (%d) exceeds the number of log-files (%d). The extra lines will be ignored.", len(lineStrs), len(logFileList))
+				break
+			}
+			lineNum, err := strconv.Atoi(strings.TrimSpace(lineStr))
+			if err != nil {
+				logrus.Fatalf("Invalid start-line value: %s (should be an integer)", lineStr)
+			}
+			startLines = append(startLines, lineNum)
+		}
+	}
+
+	// 补齐 startLines，长度与 logFileList 一致
+	for len(startLines) < len(logFileList) {
+		startLines = append(startLines, 0)
+	}
+
+	app := internal.NewApp(internal.AppConfig{
+		LogFiles:      logFileList,
 		WebhookURL:    *webhookURL,
 		WebhookSecret: *webhookSecret,
 		MatchRule:     *matchRule,
@@ -37,9 +63,11 @@ func main() {
 		TimeIndex:     *timeIndex,
 		LevelIndex:    *levelIndex,
 		ContentIndex:  *contentIndex,
+		ContentMaps:   strings.Split(*contentFields, ","),
 		MessageFormat: *messageFormat,
-	}
+		StartLines:    startLines,
+	})
+	app.Start()
 
-	internal.Start(config)
 	logrus.Info("Log monitor stopped")
 }
