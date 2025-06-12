@@ -1,12 +1,15 @@
 package internal
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/hpcloud/tail"
 	"github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,8 +20,8 @@ import (
 	"time"
 )
 
-// Config 程序配置
-type Config struct {
+// AppConfig 程序配置
+type AppConfig struct {
 	LogFiles      []string
 	WebhookURL    string
 	WebhookSecret string
@@ -28,31 +31,44 @@ type Config struct {
 	TimeIndex     int
 	LevelIndex    int
 	ContentIndex  int
+	ContentMaps   []string
 	MessageFormat string
+	StartLines    []int
+}
+
+type App struct {
+	config AppConfig
+}
+
+// NewApp ..
+func NewApp(config AppConfig) *App {
+	return &App{
+		config: config,
+	}
 }
 
 // Start 启动
-func Start(config Config) {
-	levelRe, err := regexp.Compile(config.MatchRule)
+func (app *App) Start() {
+	levelRe, err := regexp.Compile(app.config.MatchRule)
 	if err != nil {
 		logrus.Fatalf("Invalid match rule: %v", err)
 	}
 
-	logRe, err := regexp.Compile(config.LogRegex)
+	logRe, err := regexp.Compile(app.config.LogRegex)
 	if err != nil {
 		logrus.Fatalf("Invalid log regex: %v", err)
 	}
 
-	if config.TimeIndex < 1 || config.LevelIndex < 1 || config.ContentIndex < 1 {
+	if app.config.TimeIndex < 1 || app.config.LevelIndex < 1 || app.config.ContentIndex < 1 {
 		logrus.Fatal("Index values must be positive integers")
 	}
 
 	offsetStore := NewOffsetStore()
-	if err := offsetStore.Load(config.OffsetFile); err != nil {
-		logrus.Warnf("Failed to load offsets from %s: %v", config.OffsetFile, err)
+	if err := offsetStore.Load(app.config.OffsetFile); err != nil {
+		logrus.Warnf("Failed to load offsets from %s: %v", app.config.OffsetFile, err)
 	}
 
-	sigManager := NewSignatureManager(config.WebhookSecret)
+	sigManager := NewSignatureManager(app.config.WebhookSecret)
 
 	logger := logrus.New()
 	logger.Info("Starting log monitor...")
@@ -67,37 +83,56 @@ func Start(config Config) {
 		<-sigCh
 		logger.Info("Received shutdown signal, stopping...")
 		cancel()
-		if err := offsetStore.Save(config.OffsetFile); err != nil {
-			logger.Errorf("Failed to save offsets to %s: %v", config.OffsetFile, err)
+		if err := offsetStore.Save(app.config.OffsetFile); err != nil {
+			logger.Errorf("Failed to save offsets to %s: %v", app.config.OffsetFile, err)
 		}
 	}()
 
 	// 启动监控
 	var wg sync.WaitGroup
-	for _, logFile := range config.LogFiles {
+	for i, logFile := range app.config.LogFiles {
 		wg.Add(1)
-		go func(file string) {
+		go func(file string, startLine int) {
 			defer wg.Done()
-			monitorLogFile(ctx, file, config, levelRe, logRe, offsetStore, sigManager, logger)
-		}(logFile)
+			app.monitorLogFile(ctx, file, startLine, app.config, levelRe, logRe, offsetStore, sigManager, logger)
+		}(logFile, app.config.StartLines[i])
 	}
 
 	wg.Wait()
 }
 
 // formatMessage 根据模板格式化消息
-func formatMessage(template, logFile, timestamp, level string, entry LogEntry) string {
+func (app *App) formatMessage(template, logFile, timestamp, level string, content string) string {
 	result := template
+
+	// 收集带 “.” 替换为 “_”
+	var replaceKeys = make(map[string]string)
+	var replacementKeys = make([]string, 0)
+	for _, v := range app.config.ContentMaps {
+		skey := v
+		key := skey
+		if strings.Contains(skey, ".") {
+			nkey := strings.ReplaceAll(skey, ".", "_")
+			replaceKeys[skey] = nkey
+			key = nkey
+			content = strings.ReplaceAll(content, skey, nkey)
+		}
+		replacementKeys = append(replacementKeys, key)
+	}
+
 	// 支持的占位符及其替换值
-	replacements := map[string]string{
-		"{file}":      logFile,
-		"{timestamp}": timestamp,
-		"{level}":     level,
-		"{service}":   entry.ServiceID,
-		"{msg}":       entry.Msg,
-		"{caller}":    entry.Caller,
-		"{trace_id}":  entry.TraceID,
-		"{span_id}":   entry.SpanID,
+	replacements := map[string]string{}
+	for _, k := range replacementKeys {
+		key := "{" + k + "}"
+		if key == "{file}" {
+			replacements[key] = logFile
+		} else if key == "{timestamp}" {
+			replacements[key] = timestamp
+		} else if key == "{level}" {
+			replacements[key] = level
+		} else {
+			replacements[key] = gjson.Get(content, k).String()
+		}
 	}
 
 	// 替换占位符
@@ -114,14 +149,27 @@ func formatMessage(template, logFile, timestamp, level string, entry LogEntry) s
 }
 
 // monitorLogFile 监控单个日志文件
-func monitorLogFile(ctx context.Context, logFile string, config Config, levelRe, logRe *regexp.Regexp, offsetStore *OffsetStore, sigManager *SignatureManager, logger *logrus.Logger) {
-	// 初始化 tail
-	offset := offsetStore.Get(logFile)
+func (app *App) monitorLogFile(ctx context.Context, logFile string, startLine int, config AppConfig, levelRe, logRe *regexp.Regexp, offsetStore *OffsetStore, sigManager *SignatureManager, logger *logrus.Logger) {
+
+	// 确定起始偏移量
+	var offset = offsetStore.Get(logFile)
+	if startLine > 0 {
+		// 根据起始行数计算偏移量
+		lineOffset, err := app.getOffsetByLine(logFile, startLine)
+		if err != nil {
+			logger.Errorf("The starting line offset of %s cannot be calculated: %v", logFile, err)
+			return
+		}
+		if lineOffset > offset {
+			offset = lineOffset
+		}
+	}
+
 	t, err := tail.TailFile(logFile, tail.Config{
 		Follow:    true,
 		ReOpen:    true,
 		MustExist: true,
-		Location:  &tail.SeekInfo{Offset: offset, Whence: os.SEEK_SET},
+		Location:  &tail.SeekInfo{Offset: offset, Whence: io.SeekStart},
 	})
 	if err != nil {
 		logger.Errorf("Failed to tail file %s: %v", logFile, err)
@@ -178,14 +226,8 @@ func monitorLogFile(ctx context.Context, logFile string, config Config, levelRe,
 				continue
 			}
 
-			var entry LogEntry
-			if err := json.Unmarshal([]byte(jsonPart), &entry); err != nil {
-				logger.Errorf("Failed to parse JSON in %s: %v", logFile, err)
-				continue
-			}
-
-			message := formatMessage(config.MessageFormat, logFile, timestamp, level, entry)
-			if err := sendToLarkWithRetry(config.WebhookURL, message, sigManager); err != nil {
+			message := app.formatMessage(config.MessageFormat, logFile, timestamp, level, jsonPart)
+			if err := app.sendToLarkWithRetry(config.WebhookURL, message, sigManager); err != nil {
 				logger.Errorf("Failed to send to Lark for %s: %v", logFile, err)
 			} else {
 				logger.Infof("Sent to Lark for %s", logFile)
@@ -195,7 +237,7 @@ func monitorLogFile(ctx context.Context, logFile string, config Config, levelRe,
 }
 
 // sendToLarkWithRetry 发送消息到 Lark Webhook，支持重试
-func sendToLarkWithRetry(webhookURL, message string, sigManager *SignatureManager) error {
+func (app *App) sendToLarkWithRetry(webhookURL, message string, sigManager *SignatureManager) error {
 	msg := LarkMessage{
 		MsgType: "text",
 	}
@@ -239,4 +281,36 @@ func sendToLarkWithRetry(webhookURL, message string, sigManager *SignatureManage
 	bo := backoff.NewExponentialBackOff()
 	bo.MaxElapsedTime = 30 * time.Second
 	return backoff.Retry(operation, backoff.WithContext(bo, context.Background()))
+}
+
+// getOffsetByLine 计算指定行数的偏移量
+func (app *App) getOffsetByLine(file string, startLine int) (int64, error) {
+	if startLine <= 0 {
+		return 0, nil
+	}
+
+	f, err := os.Open(file)
+	if err != nil {
+		return 0, fmt.Errorf("file [%s] cannot be opened: %v", file, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var offset int64
+	lineCount := 0
+
+	for scanner.Scan() {
+		lineCount++
+		lineBytes := scanner.Bytes()
+		offset += int64(len(lineBytes)) + 1 // 加上换行符
+		if lineCount == startLine {
+			return offset, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("failed to read the file %s: %v", file, err)
+	}
+
+	return offset, nil
 }
