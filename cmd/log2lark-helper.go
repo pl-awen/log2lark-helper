@@ -19,13 +19,11 @@ func main() {
 	matchRule := flag.String("match", "ERROR", "Regular expression to match log level")
 	offsetFile := flag.String("offset-file", "monitoring_offset.json", "File to store log offsets")
 	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})`, "Regular expression to parse log line")
-	timeIndex := flag.Int("time-index", 1, "Capture group index for timestamp")
-	levelIndex := flag.Int("level-index", 2, "Capture group index for log level")
-	contentIndex := flag.Int("content-index", 3, "Capture group index for content (JSON)")
-	contentFields := flag.String("content-fields", "file,timestamp,level,service.id,msg,caller,trace.id,span.id", "Content fields")
-	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {timestamp}\n级别: {level}\n服务: {service_id}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}", "Message format template")
-	lastStartLine := flag.String("last-start-line", "", "The number of last starting lines separated by commas, corresponding to log-files (such as 100,200)")
-
+	jsonPartContentIndex := flag.String("json-part-content-index", "#3", "Regular expressions match the content index in json format")
+	levelFieldIndex := flag.String("level-field-index", "#2", "Level index of regular expression matching")
+	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {#1}\n级别: {level}\n服务: {service_id}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}\n", "Message format template")
+	lastStartLine := flag.String("last-start-line", "0", "The number of last starting lines separated by commas, corresponding to log-files (such as 100,200)")
+	contentFields := flag.String("content-fields", "#1,#2,#3,service.id,msg,caller,trace.id,span.id", "Content fields")
 	flag.Parse()
 
 	if *logFiles == "" && *watchDirs == "" {
@@ -95,9 +93,8 @@ func main() {
 		MatchRule:              *matchRule,
 		OffsetFile:             *offsetFile,
 		LogRegex:               *logRegex,
-		TimeIndex:              *timeIndex,
-		LevelIndex:             *levelIndex,
-		ContentIndex:           *contentIndex,
+		JsonPartContentIndex:   *jsonPartContentIndex,
+		LevelFieldIndex:        *levelFieldIndex,
 		ContentMaps:            strings.Split(*contentFields, ","),
 		MessageFormat:          *messageFormat,
 		LastStartLines:         lastStartLines,

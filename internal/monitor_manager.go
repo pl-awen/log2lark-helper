@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"github.com/hpcloud/tail"
 	"github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"gopkg.in/fsnotify.v1"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -28,9 +30,8 @@ type MonitorParams struct {
 	WatchDirFileSuffixList []string
 	LevelRe                *regexp.Regexp
 	LogRe                  *regexp.Regexp
-	TimeIndex              int
-	LevelIndex             int
-	ContentIndex           int
+	JsonPartContentIndex   string
+	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
 }
@@ -239,20 +240,48 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 
 			// 解析日志行
 			matches := mm.params.LogRe.FindStringSubmatch(line.Text)
-			if len(matches) <= mm.params.TimeIndex || len(matches) <= mm.params.LevelIndex || len(matches) <= mm.params.ContentIndex {
-				mm.logger.Warnf("Invalid log format in %s: %s (insufficient capture groups)", logFile, line.Text)
+
+			// 解析索引
+			var jsonPart string
+			jsonPartIndexStr := strings.ReplaceAll(mm.params.JsonPartContentIndex, "#", "")
+			jsonPartIndex, err := strconv.Atoi(jsonPartIndexStr)
+			if err != nil {
+				mm.logger.Errorf("Failed to parse json part index from %s: %v", logFile, err)
 				continue
 			}
-			timestamp := matches[mm.params.TimeIndex]
-			level := matches[mm.params.LevelIndex]
-			jsonPart := matches[mm.params.ContentIndex]
+
+			if len(matches) <= jsonPartIndex {
+				mm.logger.Warn("Found json part index %d in %s", jsonPartIndex, matches)
+				continue
+			} else {
+				jsonPart = matches[jsonPartIndex]
+			}
+
+			var level string
+			if strings.HasPrefix(mm.params.LevelFieldIndex, "#") {
+				levelIndexStr := strings.ReplaceAll(mm.params.LevelFieldIndex, "#", "")
+				levelIndex, err := strconv.Atoi(levelIndexStr)
+				if err != nil {
+					mm.logger.Warn("Failed to parse level index from %s: %v", logFile, err)
+					continue
+				}
+
+				if len(matches) <= levelIndex {
+					mm.logger.Warn("Found level index %d in %s", levelIndex, matches)
+					continue
+				} else {
+					level = matches[levelIndex]
+				}
+			} else {
+				level = gjson.Get(jsonPart, mm.params.LevelFieldIndex).String()
+			}
 
 			// 匹配日志级别
 			if !mm.params.LevelRe.MatchString(level) {
 				continue
 			}
 
-			message := formatMessage(mm.params.MessageFormat, logFile, timestamp, level, jsonPart, mm.params.ContentMaps)
+			message := formatMessage(matches, mm.params.MessageFormat, logFile, level, jsonPart, mm.params.ContentMaps)
 			if err = mm.sendToLarkManager.sendWithRetry(message); err != nil {
 				mm.logger.Errorf("Failed to send to Lark for %s: %v", logFile, err)
 			} else {

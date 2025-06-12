@@ -3,11 +3,12 @@ package internal
 import (
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"strconv"
 	"strings"
 )
 
 // formatMessage 根据模板格式化消息
-func formatMessage(template, logFile, timestamp, level string, content string, contentMaps []string) string {
+func formatMessage(matches []string, template, logFile, level string, content string, contentMaps []string) string {
 	result := template
 
 	// 收集带 “.” 替换为 “_”
@@ -29,16 +30,24 @@ func formatMessage(template, logFile, timestamp, level string, content string, c
 	replacements := map[string]string{}
 	for _, k := range replacementKeys {
 		key := "{" + k + "}"
-		if key == "{file}" {
-			replacements[key] = logFile
-		} else if key == "{timestamp}" {
-			replacements[key] = timestamp
-		} else if key == "{level}" {
-			replacements[key] = level
+
+		if strings.HasPrefix(k, "#") {
+			keyIndexStr := strings.ReplaceAll(k, "#", "")
+			keyIndex, err := strconv.Atoi(keyIndexStr)
+			if err != nil {
+				continue
+			}
+			if len(matches) <= keyIndex {
+				continue
+			} else {
+				replacements[key] = matches[keyIndex]
+			}
 		} else {
 			replacements[key] = gjson.Get(content, k).String()
 		}
 	}
+	replacements["{file}"] = logFile
+	replacements["{level}"] = level
 
 	// 替换占位符
 	for placeholder, value := range replacements {
@@ -49,6 +58,9 @@ func formatMessage(template, logFile, timestamp, level string, content string, c
 	if strings.Contains(result, "{") {
 		logrus.Warnf("Unknown placeholders in message template: %s", result)
 	}
+
+	// 将 \\n 替换 \n
+	result = strings.ReplaceAll(result, "\\n", "\n")
 
 	return result
 }
