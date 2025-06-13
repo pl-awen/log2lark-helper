@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // AppConfig 程序配置
@@ -18,13 +19,18 @@ type AppConfig struct {
 	WebhookURL             string
 	WebhookSecret          string
 	LastStartLines         []int
+	CacheTimeSecond        int
+	CacheContentIndex      string
 	MatchRule              string
 	OffsetFile             string
 	LogRegex               string
+	IncludeRegex           string
+	ExcludeRegex           string
 	JsonPartContentIndex   string
 	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
+	EnableRAWLogFormat     bool
 }
 
 type App struct {
@@ -42,7 +48,7 @@ func NewApp(config AppConfig) *App {
 func (app *App) Start() {
 	levelRe, err := regexp.Compile(app.config.MatchRule)
 	if err != nil {
-		logrus.Fatalf("Invalid match rule: %v", err)
+		logrus.Fatalf("Invalid level rule: %v", err)
 	}
 
 	logRe, err := regexp.Compile(app.config.LogRegex)
@@ -82,6 +88,14 @@ func (app *App) Start() {
 	// 发送飞书
 	sendLarkManager := NewSendToLarkManager(app.config.WebhookURL, sigManager)
 
+	// 缓存
+	var memoryCache *MemoryCache
+	if app.config.CacheTimeSecond > 0 {
+		second := time.Duration(app.config.CacheTimeSecond) * time.Second
+		memoryCache = NewMemoryCache("LOG-CACHE", second, time.Second*5)
+		defer memoryCache.Close()
+	}
+
 	// 创建监听管理
 	mparms := MonitorParams{
 		LevelRe:                levelRe,
@@ -91,8 +105,27 @@ func (app *App) Start() {
 		LevelFieldIndex:        app.config.LevelFieldIndex,
 		ContentMaps:            app.config.ContentMaps,
 		MessageFormat:          app.config.MessageFormat,
+		CacheContentIndex:      app.config.CacheContentIndex,
+		EnableRAWLogFormat:     app.config.EnableRAWLogFormat,
 	}
-	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, logger)
+
+	if app.config.ExcludeRegex != "" {
+		excludeRe, err := regexp.Compile(app.config.ExcludeRegex)
+		if err != nil {
+			logrus.Fatalf("Invalid exclude regex: %v", err)
+		}
+		mparms.ExcludeRe = excludeRe
+	}
+
+	if app.config.IncludeRegex != "" {
+		includeRe, err := regexp.Compile(app.config.IncludeRegex)
+		if err != nil {
+			logrus.Fatalf("Invalid include regex: %v", err)
+		}
+		mparms.IncludeRe = includeRe
+	}
+
+	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, memoryCache, logger)
 
 	// 启动文件监控
 	var wg sync.WaitGroup
