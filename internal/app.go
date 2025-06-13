@@ -24,10 +24,13 @@ type AppConfig struct {
 	MatchRule              string
 	OffsetFile             string
 	LogRegex               string
+	IncludeRegex           string
+	ExcludeRegex           string
 	JsonPartContentIndex   string
 	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
+	EnableRAWLogFormat     bool
 }
 
 type App struct {
@@ -45,7 +48,7 @@ func NewApp(config AppConfig) *App {
 func (app *App) Start() {
 	levelRe, err := regexp.Compile(app.config.MatchRule)
 	if err != nil {
-		logrus.Fatalf("Invalid match rule: %v", err)
+		logrus.Fatalf("Invalid level rule: %v", err)
 	}
 
 	logRe, err := regexp.Compile(app.config.LogRegex)
@@ -103,7 +106,25 @@ func (app *App) Start() {
 		ContentMaps:            app.config.ContentMaps,
 		MessageFormat:          app.config.MessageFormat,
 		CacheContentIndex:      app.config.CacheContentIndex,
+		EnableRAWLogFormat:     app.config.EnableRAWLogFormat,
 	}
+
+	if app.config.ExcludeRegex != "" {
+		excludeRe, err := regexp.Compile(app.config.ExcludeRegex)
+		if err != nil {
+			logrus.Fatalf("Invalid exclude regex: %v", err)
+		}
+		mparms.ExcludeRe = excludeRe
+	}
+
+	if app.config.IncludeRegex != "" {
+		includeRe, err := regexp.Compile(app.config.IncludeRegex)
+		if err != nil {
+			logrus.Fatalf("Invalid include regex: %v", err)
+		}
+		mparms.IncludeRe = includeRe
+	}
+
 	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, memoryCache, logger)
 
 	// 启动文件监控

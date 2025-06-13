@@ -32,11 +32,14 @@ type MonitorParams struct {
 	WatchDirFileSuffixList []string
 	LevelRe                *regexp.Regexp
 	LogRe                  *regexp.Regexp
+	IncludeRe              *regexp.Regexp
+	ExcludeRe              *regexp.Regexp
 	JsonPartContentIndex   string
 	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
 	CacheContentIndex      string
+	EnableRAWLogFormat     bool
 }
 
 // NewMonitorManager ..
@@ -242,6 +245,31 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 			}
 			mm.offsetStore.Set(logFile, offset)
 
+			// 排除日志行
+			if mm.params.ExcludeRe != nil {
+				excludeMatches := mm.params.ExcludeRe.FindStringSubmatch(line.Text)
+				if len(excludeMatches) > 0 {
+					continue
+				}
+			}
+
+			// 使用原始日志格式
+			if mm.params.EnableRAWLogFormat {
+				if mm.params.IncludeRe != nil {
+					includeMatches := mm.params.IncludeRe.FindStringSubmatch(line.Text)
+					if len(includeMatches) <= 0 {
+						continue
+					}
+				}
+
+				if err = mm.sendToLarkManager.sendWithRetry(line.Text); err != nil {
+					mm.logger.Errorf("Failed to send to Lark for %s: %v", logFile, err)
+				} else {
+					mm.logger.Infof("Sent to Lark for %s", logFile)
+				}
+				continue
+			}
+
 			// 解析日志行
 			matches := mm.params.LogRe.FindStringSubmatch(line.Text)
 
@@ -280,8 +308,12 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				level = gjson.Get(jsonPart, mm.params.LevelFieldIndex).String()
 			}
 
-			// 匹配日志级别
-			if !mm.params.LevelRe.MatchString(level) {
+			if mm.params.IncludeRe != nil {
+				includeMatches := mm.params.IncludeRe.FindStringSubmatch(line.Text)
+				if len(includeMatches) <= 0 && !mm.params.LevelRe.MatchString(level) {
+					continue
+				}
+			} else if !mm.params.LevelRe.MatchString(level) {
 				continue
 			}
 

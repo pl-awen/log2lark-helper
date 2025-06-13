@@ -16,16 +16,19 @@ func main() {
 	watchDirFileSuffix := flag.String("watch-dir-file-suffix", ".log", "Listen for the file suffixes in the directory (e.g., .log,.logger)")
 	webhookURL := flag.String("webhook-url", "", "Webhook URL")
 	webhookSecret := flag.String("webhook-secret", "", "Webhook secret key")
-	cacheTimeSecond := flag.String("cache-time-second", "1", "Cache tine, in seconds")
+	cacheTimeSecond := flag.Int("cache-time-second", 1, "Cache tine, in seconds")
 	cacheContentIndex := flag.String("cache-content-index", "msg", "Cache content")
 	matchRule := flag.String("match", "ERROR", "Regular expression to match log level")
 	offsetFile := flag.String("offset-file", "monitoring_offset.json", "File to store log offsets")
+	includeRegex := flag.String("include-regex", ``, "Regular expression to include log lines")
+	excludeRegex := flag.String("exclude-regex", ``, "Regular expression to exclude log lines")
 	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})`, "Regular expression to parse log line")
 	jsonPartContentIndex := flag.String("json-part-content-index", "#3", "Regular expressions match the content index in json format")
 	levelFieldIndex := flag.String("level-field-index", "#2", "Level index of regular expression matching")
 	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {#1}\n级别: {level}\n服务: {service_id}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}\n", "Message format template")
 	lastStartLine := flag.String("last-start-line", "0", "The number of last starting lines separated by commas, corresponding to log-files (such as 100,200)")
 	contentFields := flag.String("content-fields", "#1,#2,#3,service.id,msg,caller,trace.id,span.id", "Content fields")
+	enableRAWLogFormat := flag.Bool("enable-raw-log-format", false, "Enable the log raw format")
 	flag.Parse()
 
 	if *logFiles == "" && *watchDirs == "" {
@@ -86,13 +89,7 @@ func main() {
 		watchDirFileSuffixList = strings.Split(*watchDirFileSuffix, ",")
 	}
 
-	rrTimeSecond, err := strconv.Atoi(*cacheTimeSecond)
-	if err != nil {
-		logrus.Errorf("Invalid report-rate value: %s (should be an integer)", *cacheTimeSecond)
-		return
-	}
-
-	app := internal.NewApp(internal.AppConfig{
+	params := internal.AppConfig{
 		LogFiles:               logFileList,
 		WatchDirs:              watchDirList,
 		WatchDirFileSuffixList: watchDirFileSuffixList,
@@ -106,9 +103,20 @@ func main() {
 		ContentMaps:            strings.Split(*contentFields, ","),
 		MessageFormat:          *messageFormat,
 		LastStartLines:         lastStartLines,
-		CacheTimeSecond:        rrTimeSecond,
+		CacheTimeSecond:        *cacheTimeSecond,
 		CacheContentIndex:      *cacheContentIndex,
-	})
+		EnableRAWLogFormat:     *enableRAWLogFormat,
+	}
+
+	if *excludeRegex != "" {
+		params.ExcludeRegex = *excludeRegex
+	}
+
+	if *includeRegex != "" {
+		params.IncludeRegex = *includeRegex
+	}
+
+	app := internal.NewApp(params)
 	app.Start()
 
 	logrus.Info("Log monitor stopped")
