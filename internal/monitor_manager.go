@@ -3,6 +3,7 @@ package internal
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
 	"fmt"
 	"github.com/hpcloud/tail"
 	"github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ type MonitorManager struct {
 	monitors          sync.Map // map[string]context.CancelFunc
 	params            MonitorParams
 	sendToLarkManager *SendToLarkManager
+	memoryCache       *MemoryCache
 	logger            *logrus.Logger
 	offsetStore       *OffsetStore
 }
@@ -30,18 +32,23 @@ type MonitorParams struct {
 	WatchDirFileSuffixList []string
 	LevelRe                *regexp.Regexp
 	LogRe                  *regexp.Regexp
+	IncludeRe              *regexp.Regexp
+	ExcludeRe              *regexp.Regexp
 	JsonPartContentIndex   string
 	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
+	CacheContentIndex      string
+	EnableRAWLogFormat     bool
 }
 
 // NewMonitorManager ..
-func NewMonitorManager(params MonitorParams, sendToLarkManager *SendToLarkManager, offsetStore *OffsetStore, logger *logrus.Logger) *MonitorManager {
+func NewMonitorManager(params MonitorParams, sendToLarkManager *SendToLarkManager, offsetStore *OffsetStore, memoryCache *MemoryCache, logger *logrus.Logger) *MonitorManager {
 	return &MonitorManager{
 		params:            params,
 		sendToLarkManager: sendToLarkManager,
 		offsetStore:       offsetStore,
+		memoryCache:       memoryCache,
 		logger:            logger,
 	}
 }
@@ -238,6 +245,31 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 			}
 			mm.offsetStore.Set(logFile, offset)
 
+			// 排除日志行
+			if mm.params.ExcludeRe != nil {
+				excludeMatches := mm.params.ExcludeRe.FindStringSubmatch(line.Text)
+				if len(excludeMatches) > 0 {
+					continue
+				}
+			}
+
+			// 使用原始日志格式
+			if mm.params.EnableRAWLogFormat {
+				if mm.params.IncludeRe != nil {
+					includeMatches := mm.params.IncludeRe.FindStringSubmatch(line.Text)
+					if len(includeMatches) <= 0 {
+						continue
+					}
+				}
+
+				if err = mm.sendToLarkManager.sendWithRetry(line.Text); err != nil {
+					mm.logger.Errorf("Failed to send to Lark for %s: %v", logFile, err)
+				} else {
+					mm.logger.Infof("Sent to Lark for %s", logFile)
+				}
+				continue
+			}
+
 			// 解析日志行
 			matches := mm.params.LogRe.FindStringSubmatch(line.Text)
 
@@ -276,9 +308,51 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				level = gjson.Get(jsonPart, mm.params.LevelFieldIndex).String()
 			}
 
-			// 匹配日志级别
-			if !mm.params.LevelRe.MatchString(level) {
+			if mm.params.IncludeRe != nil {
+				includeMatches := mm.params.IncludeRe.FindStringSubmatch(line.Text)
+				if len(includeMatches) <= 0 && !mm.params.LevelRe.MatchString(level) {
+					continue
+				}
+			} else if !mm.params.LevelRe.MatchString(level) {
 				continue
+			}
+
+			// 使用缓存限制频率
+			if mm.memoryCache != nil {
+				var cacheContent string
+				if strings.HasPrefix(mm.params.CacheContentIndex, "#") {
+					cacheContentIndexStr := strings.ReplaceAll(mm.params.CacheContentIndex, "#", "")
+					cacheContentIndex, err := strconv.Atoi(cacheContentIndexStr)
+					if err != nil {
+						mm.logger.Warn("Failed to parse cache content index from %s: %v", logFile, err)
+						continue
+					}
+
+					if len(matches) <= cacheContentIndex {
+						mm.logger.Warn("Found cache content index %d in %s", cacheContentIndex, matches)
+						continue
+					} else {
+						cacheContent = matches[cacheContentIndex]
+					}
+				} else {
+					cacheContent = gjson.Get(jsonPart, mm.params.CacheContentIndex).String()
+				}
+
+				key := mm.computeMD5(cacheContent)
+				value, err := mm.memoryCache.GetCache(ctx, key)
+
+				if err != nil {
+					mm.logger.Warnf("Failed to get content for %s: %v", key, err)
+				}
+
+				if value != "" {
+					continue
+				}
+
+				if err = mm.memoryCache.SetCache(ctx, key, "ok"); err != nil {
+					mm.logger.Warnf("Failed to set content for %s: %v", key, err)
+					continue
+				}
 			}
 
 			message := formatMessage(matches, mm.params.MessageFormat, logFile, level, jsonPart, mm.params.ContentMaps)
@@ -289,6 +363,12 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 			}
 		}
 	}
+}
+
+// computeMD5 计算 MD5
+func (mm *MonitorManager) computeMD5(text string) string {
+	hash := md5.Sum([]byte(text))
+	return fmt.Sprintf("%x", hash)
 }
 
 // getOffsetByLine 计算指定行数的偏移量
@@ -343,7 +423,6 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 	}
 	fileSize := fileInfo.Size()
 
-	// 如果文件为空，直接返回
 	if fileSize == 0 {
 		return 0, nil
 	}
@@ -363,14 +442,12 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 			return 0, fmt.Errorf("seek 失败: %v", err)
 		}
 
-		// 读取一个字节
 		b := make([]byte, 1)
 		_, err = file.Read(b)
 		if err != nil {
 			return 0, fmt.Errorf("读取字节失败: %v", err)
 		}
 
-		// 检查是否为换行符
 		if b[0] == '\n' {
 			lineCount++
 			if lineCount == n {
@@ -380,11 +457,9 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 			}
 		}
 
-		// 向前移动
 		offset--
 	}
 
-	// 如果行数不足 n，返回文件开头
 	if lineCount < n {
 		return 0, nil
 	}
