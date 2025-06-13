@@ -36,6 +36,7 @@ type MonitorParams struct {
 	LevelFieldIndex        string
 	ContentMaps            []string
 	MessageFormat          string
+	CacheContentIndex      string
 }
 
 // NewMonitorManager ..
@@ -286,17 +287,36 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 
 			// 使用缓存限制频率
 			if mm.memoryCache != nil {
-				key := mm.computeMD5(jsonPart)
+				var cacheContent string
+				if strings.HasPrefix(mm.params.CacheContentIndex, "#") {
+					cacheContentIndexStr := strings.ReplaceAll(mm.params.CacheContentIndex, "#", "")
+					cacheContentIndex, err := strconv.Atoi(cacheContentIndexStr)
+					if err != nil {
+						mm.logger.Warn("Failed to parse cache content index from %s: %v", logFile, err)
+						continue
+					}
+
+					if len(matches) <= cacheContentIndex {
+						mm.logger.Warn("Found cache content index %d in %s", cacheContentIndex, matches)
+						continue
+					} else {
+						cacheContent = matches[cacheContentIndex]
+					}
+				} else {
+					cacheContent = gjson.Get(jsonPart, mm.params.CacheContentIndex).String()
+				}
+
+				key := mm.computeMD5(cacheContent)
 				content, err := mm.memoryCache.GetCache(ctx, key)
 				if err != nil {
 					mm.logger.Warnf("Failed to get content for %s: %v", key, err)
 				}
 
-				if content != "" {
+				if content != "ok" {
 					continue
 				}
 
-				if err = mm.memoryCache.SetCache(ctx, key, jsonPart); err != nil {
+				if err = mm.memoryCache.SetCache(ctx, key, "ok"); err != nil {
 					mm.logger.Warnf("Failed to set content for %s: %v", key, err)
 					continue
 				}
@@ -370,7 +390,6 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 	}
 	fileSize := fileInfo.Size()
 
-	// 如果文件为空，直接返回
 	if fileSize == 0 {
 		return 0, nil
 	}
@@ -390,14 +409,12 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 			return 0, fmt.Errorf("seek 失败: %v", err)
 		}
 
-		// 读取一个字节
 		b := make([]byte, 1)
 		_, err = file.Read(b)
 		if err != nil {
 			return 0, fmt.Errorf("读取字节失败: %v", err)
 		}
 
-		// 检查是否为换行符
 		if b[0] == '\n' {
 			lineCount++
 			if lineCount == n {
@@ -407,11 +424,9 @@ func (mm *MonitorManager) getLastNLinesOffset(filePath string, n int) (int64, er
 			}
 		}
 
-		// 向前移动
 		offset--
 	}
 
-	// 如果行数不足 n，返回文件开头
 	if lineCount < n {
 		return 0, nil
 	}

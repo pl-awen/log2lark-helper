@@ -19,7 +19,8 @@ type AppConfig struct {
 	WebhookURL             string
 	WebhookSecret          string
 	LastStartLines         []int
-	ReportRateTimeSecond   int
+	CacheTimeSecond        int
+	CacheContentIndex      string
 	MatchRule              string
 	OffsetFile             string
 	LogRegex               string
@@ -86,8 +87,8 @@ func (app *App) Start() {
 
 	// 缓存
 	var memoryCache *MemoryCache
-	if app.config.ReportRateTimeSecond > 0 {
-		memoryCache = NewMemoryCache("LOG-CACHE", time.Duration(app.config.ReportRateTimeSecond), 10)
+	if app.config.CacheTimeSecond > 0 {
+		memoryCache = NewMemoryCache("LOG-CACHE", time.Second*time.Duration(app.config.CacheTimeSecond), 10)
 		defer memoryCache.Close()
 	}
 
@@ -100,6 +101,7 @@ func (app *App) Start() {
 		LevelFieldIndex:        app.config.LevelFieldIndex,
 		ContentMaps:            app.config.ContentMaps,
 		MessageFormat:          app.config.MessageFormat,
+		CacheContentIndex:      app.config.CacheContentIndex,
 	}
 	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, memoryCache, logger)
 

@@ -16,7 +16,8 @@ func main() {
 	watchDirFileSuffix := flag.String("watch-dir-file-suffix", ".log", "Listen for the file suffixes in the directory (e.g., .log,.logger)")
 	webhookURL := flag.String("webhook-url", "", "Webhook URL")
 	webhookSecret := flag.String("webhook-secret", "", "Webhook secret key")
-	reportRateTimeSecond := flag.String("report-rate", "1", "Report the rate interval, in seconds")
+	cacheTimeSecond := flag.String("cache-time-second", "1", "Cache tine, in seconds")
+	cacheContentIndex := flag.String("cache-content-index", "msg", "Cache content")
 	matchRule := flag.String("match", "ERROR", "Regular expression to match log level")
 	offsetFile := flag.String("offset-file", "monitoring_offset.json", "File to store log offsets")
 	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})`, "Regular expression to parse log line")
@@ -85,9 +86,9 @@ func main() {
 		watchDirFileSuffixList = strings.Split(*watchDirFileSuffix, ",")
 	}
 
-	rrTimeSecond, err := strconv.Atoi(*reportRateTimeSecond)
+	rrTimeSecond, err := strconv.Atoi(*cacheTimeSecond)
 	if err != nil {
-		logrus.Errorf("Invalid report-rate value: %s (should be an integer)", *reportRateTimeSecond)
+		logrus.Errorf("Invalid report-rate value: %s (should be an integer)", *cacheTimeSecond)
 		return
 	}
 
@@ -105,7 +106,8 @@ func main() {
 		ContentMaps:            strings.Split(*contentFields, ","),
 		MessageFormat:          *messageFormat,
 		LastStartLines:         lastStartLines,
-		ReportRateTimeSecond:   rrTimeSecond,
+		CacheTimeSecond:        rrTimeSecond,
+		CacheContentIndex:      *cacheContentIndex,
 	})
 	app.Start()
 
