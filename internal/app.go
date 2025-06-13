@@ -88,7 +88,8 @@ func (app *App) Start() {
 	// 缓存
 	var memoryCache *MemoryCache
 	if app.config.CacheTimeSecond > 0 {
-		memoryCache = NewMemoryCache("LOG-CACHE", time.Second*time.Duration(app.config.CacheTimeSecond), 10)
+		second := time.Duration(app.config.CacheTimeSecond) * time.Second
+		memoryCache = NewMemoryCache("LOG-CACHE", second, time.Second*5)
 		defer memoryCache.Close()
 	}
 

@@ -307,12 +307,13 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				}
 
 				key := mm.computeMD5(cacheContent)
-				content, err := mm.memoryCache.GetCache(ctx, key)
+				value, err := mm.memoryCache.GetCache(ctx, key)
+
 				if err != nil {
 					mm.logger.Warnf("Failed to get content for %s: %v", key, err)
 				}
 
-				if content != "ok" {
+				if value != "" {
 					continue
 				}
 
