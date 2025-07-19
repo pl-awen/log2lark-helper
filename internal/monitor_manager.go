@@ -23,6 +23,7 @@ type MonitorManager struct {
 	monitors          sync.Map // map[string]context.CancelFunc
 	params            MonitorParams
 	sendToLarkManager *SendToLarkManager
+	sendLokiManager   *SendToLokiManager
 	memoryCache       *MemoryCache
 	logger            *logrus.Logger
 	offsetStore       *OffsetStore
@@ -43,10 +44,18 @@ type MonitorParams struct {
 }
 
 // NewMonitorManager ..
-func NewMonitorManager(params MonitorParams, sendToLarkManager *SendToLarkManager, offsetStore *OffsetStore, memoryCache *MemoryCache, logger *logrus.Logger) *MonitorManager {
+func NewMonitorManager(
+	params MonitorParams,
+	sendToLarkManager *SendToLarkManager,
+	sendLokiManager *SendToLokiManager,
+	offsetStore *OffsetStore,
+	memoryCache *MemoryCache,
+	logger *logrus.Logger,
+) *MonitorManager {
 	return &MonitorManager{
 		params:            params,
 		sendToLarkManager: sendToLarkManager,
+		sendLokiManager:   sendLokiManager,
 		offsetStore:       offsetStore,
 		memoryCache:       memoryCache,
 		logger:            logger,
@@ -235,6 +244,10 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 			if line.Err != nil {
 				mm.logger.Errorf("Error reading line from %s: %v", logFile, line.Err)
 				continue
+			}
+
+			if err = mm.sendLokiManager.sendWithRetry("xxxxxxxx", "2025-07-20 18:02:40"); err != nil {
+				mm.logger.Errorf("Failed to send line to loki: %v", err)
 			}
 
 			// 更新偏移量
