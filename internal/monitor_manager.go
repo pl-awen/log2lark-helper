@@ -212,7 +212,7 @@ func (mm *MonitorManager) getInode(filePath string) (uint64, error) {
 	}
 	stat, ok := fileInfo.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, fmt.Errorf("无法转换为 syscall.Stat_t")
+		return 0, fmt.Errorf("Cannot be converted to syscall.Stat_t")
 	}
 	return stat.Ino, nil
 }
@@ -226,37 +226,76 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 	var offset int64
 	var err error
 
+	// 确定起始偏移量
+	offset = mm.offsetStore.Get(logFile)
+	if lastStartLine > 0 {
+		// 根据末尾起始行数计算偏移量
+		offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
+		if err != nil {
+			mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
+			return
+		}
+	} else if offset == 0 {
+		offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
+		if err != nil {
+			mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
+			return
+		}
+	}
+
+	var initialInode uint64
+	var initialFileInfo os.FileInfo
+
+	// Start the inode to check the goroutine
+	fileChanged := make(chan bool)
+	var isFileChanged bool
+	defer close(fileChanged)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(checkInterval):
+				if isFileChanged {
+					return
+				}
+
+				currentInode, err := mm.getInode(logFile)
+				if err != nil {
+					mm.logger.Warnf("Error: %v when checking %v inode", logFile, err)
+					continue
+				}
+				currentFileInfo, err := os.Stat(logFile)
+				if err != nil {
+					mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
+					continue
+				}
+				if currentInode != initialInode ||
+					currentFileInfo.ModTime() != initialFileInfo.ModTime() ||
+					currentFileInfo.Size() < offset { // 如果新大小 < 旧偏移，必定替换
+					mm.logger.Infof("The %s file replacement (inode change: %d -> %d) was detected, and the monitoring was reset", logFile, initialInode, currentInode)
+					isFileChanged = true
+					fileChanged <- true
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-
-			// 确定起始偏移量
-			offset = mm.offsetStore.Get(logFile)
-			if lastStartLine > 0 {
-				// 根据末尾起始行数计算偏移量
-				offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
-				if err != nil {
-					mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
-					return
-				}
-			} else if offset == 0 {
-				offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
-				if err != nil {
-					mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
-					return
-				}
-			}
-
 			// 获取初始文件信息和 inode
-			initialInode, err := mm.getInode(logFile)
+			initialInode, err = mm.getInode(logFile)
 			if err != nil {
 				mm.logger.Errorf("The initial inode of %s cannot be obtained: %v", logFile, err)
 				return
 			}
 
-			initialFileInfo, err := os.Stat(logFile)
+			initialFileInfo, err = os.Stat(logFile)
 			if err != nil {
 				mm.logger.Errorf("Failed to get initial file info for %s: %v", logFile, err)
 				return
@@ -289,36 +328,6 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 
 			mm.logger.Infof("Monitoring file: %s", logFile)
 
-			// Start the inode to check the goroutine
-			fileChanged := make(chan bool)
-			go func() {
-				defer close(fileChanged)
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(checkInterval):
-						currentInode, err := mm.getInode(logFile)
-						if err != nil {
-							mm.logger.Warnf("Error: %v when checking %v inode", logFile, err)
-							continue
-						}
-						currentFileInfo, err := os.Stat(logFile)
-						if err != nil {
-							mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
-							continue
-						}
-						if currentInode != initialInode ||
-							currentFileInfo.ModTime() != initialFileInfo.ModTime() ||
-							currentFileInfo.Size() < offset { // 如果新大小 < 旧偏移，必定替换
-							mm.logger.Infof("The %s file replacement (inode change: %d -> %d) was detected, and the monitoring was reset", logFile, initialInode, currentInode)
-							fileChanged <- true
-							return
-						}
-					}
-				}
-			}()
-
 		innerLoop:
 			for {
 				select {
@@ -345,7 +354,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 						offset = 0
 						lastStartLine = 0
 						mm.logger.Infof("Reset the %s offset to 0 and restart the monitoring", logFile)
-						time.Sleep(checkInterval)
+						isFileChanged = false
 						break innerLoop
 					}
 				case line, ok := <-t.Lines:
@@ -354,6 +363,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 						// 额外检查文件变化
 						currentInode, _ := mm.getInode(logFile)
 						if currentInode != initialInode {
+							isFileChanged = true
 							fileChanged <- true
 							continue
 						}
