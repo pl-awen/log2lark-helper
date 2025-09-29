@@ -462,7 +462,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					}
 
 					if len(matches) <= jsonPartIndex {
-						mm.logger.Warnf("Found json part index %d in %s", jsonPartIndex, matches)
+						mm.logger.Warnf("Found json part index %d in %s, log: %v", jsonPartIndex, matches, line.Text)
 						continue
 					} else {
 						jsonPart = matches[jsonPartIndex]
