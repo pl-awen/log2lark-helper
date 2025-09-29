@@ -252,11 +252,11 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					mm.logger.Warnf("An error occurred when checking the %s node: %v", logFile, err)
 					continue
 				}
-				//currentFileInfo, err := os.Stat(logFile)
-				//if err != nil {
-				//	mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
-				//	continue
-				//}
+				currentFileInfo, err := os.Stat(logFile)
+				if err != nil {
+					mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
+					continue
+				}
 				if !initialized {
 					// 初始化
 					lastInode = currentInode
@@ -265,10 +265,9 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					continue
 				}
 				// 检查 inode、修改时间或大小
-				//if currentInode != lastInode ||
-				//	currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
-				//	currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
-				if currentInode != lastInode {
+				// currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
+				if currentInode != lastInode ||
+					currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
 					mm.logger.Infof("A reset is triggered when a %s file replacement (inode: %d -> %d) or status change is detected", logFile, lastInode, currentInode)
 					select {
 					case fileChanged <- true:
