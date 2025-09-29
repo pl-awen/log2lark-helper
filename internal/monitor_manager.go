@@ -220,7 +220,7 @@ func (mm *MonitorManager) getInode(filePath string) (uint64, error) {
 
 // monitorLogFile 监控单个日志文件
 func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, lastStartLine int) {
-	const checkInterval = 10 * time.Second // 检查间隔
+	const checkInterval = 30 * time.Second // 检查间隔
 	const maxRetries = 3
 	const retryDelay = time.Second
 	const tailTimeout = 5 * time.Minute // tail 读取超时检查
@@ -237,7 +237,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
 		var lastInode uint64
-		var lastFileInfo os.FileInfo
+		//var lastFileInfo os.FileInfo
 		var initialized bool
 
 		for {
@@ -260,13 +260,13 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				if !initialized {
 					// 初始化
 					lastInode = currentInode
-					lastFileInfo = currentFileInfo
+					//lastFileInfo = currentFileInfo
 					initialized = true
 					continue
 				}
 				// 检查 inode、修改时间或大小
+				// currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
 				if currentInode != lastInode ||
-					currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
 					currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
 					mm.logger.Infof("A reset is triggered when a %s file replacement (inode: %d -> %d) or status change is detected", logFile, lastInode, currentInode)
 					select {
@@ -274,7 +274,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					default: // 避免阻塞
 					}
 					lastInode = currentInode
-					lastFileInfo = currentFileInfo
+					//lastFileInfo = currentFileInfo
 				}
 			}
 		}
@@ -478,7 +478,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 						}
 
 						if len(matches) <= levelIndex {
-							mm.logger.Warnf("Found level index %d in %s", levelIndex, matches)
+							mm.logger.Warnf("Found level index %d in %s, content: %s", levelIndex, matches, line.Text)
 							continue
 						} else {
 							level = matches[levelIndex]
