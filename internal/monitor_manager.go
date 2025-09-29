@@ -5,7 +5,8 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"github.com/hpcloud/tail"
+	"github.com/nxadm/tail"
+
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"gopkg.in/fsnotify.v1"
@@ -219,51 +220,36 @@ func (mm *MonitorManager) getInode(filePath string) (uint64, error) {
 
 // monitorLogFile 监控单个日志文件
 func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, lastStartLine int) {
-	const checkInterval = 5 * time.Second // 检查间隔
+	const checkInterval = 10 * time.Second // 检查间隔
 	const maxRetries = 3
 	const retryDelay = time.Second
+	const tailTimeout = 5 * time.Minute // tail 读取超时检查
 
-	var offset int64
-	var err error
-
-	// 确定起始偏移量
-	offset = mm.offsetStore.Get(logFile)
-	if lastStartLine > 0 {
-		// 根据末尾起始行数计算偏移量
-		offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
-		if err != nil {
-			mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
-			return
-		}
-	} else if offset == 0 {
-		offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
-		if err != nil {
-			mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
-			return
-		}
-	}
-
-	var initialInode uint64
-	var initialFileInfo os.FileInfo
-
-	// Start the inode to check the goroutine
-	fileChanged := make(chan bool)
-	var isFileChanged bool
+	// 创建单一 fileChanged 通道
+	fileChanged := make(chan bool, 1)
 	defer close(fileChanged)
 
+	// 启动单一 inode 检查 goroutine
+	var checkWg sync.WaitGroup
+	checkWg.Add(1)
 	go func() {
+		defer checkWg.Done()
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+		var lastInode uint64
+		var lastFileInfo os.FileInfo
+		var initialized bool
+
 		for {
 			select {
 			case <-ctx.Done():
+				mm.logger.Debugf("The file check goroutine exits for %s", logFile)
 				return
-			case <-time.After(checkInterval):
-				if isFileChanged {
-					return
-				}
-
+			case <-ticker.C:
+				// 获取当前文件状态
 				currentInode, err := mm.getInode(logFile)
 				if err != nil {
-					mm.logger.Warnf("Error: %v when checking %v inode", logFile, err)
+					mm.logger.Warnf("An error occurred when checking the %s node: %v", logFile, err)
 					continue
 				}
 				currentFileInfo, err := os.Stat(logFile)
@@ -271,13 +257,24 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
 					continue
 				}
-				if currentInode != initialInode ||
-					currentFileInfo.ModTime() != initialFileInfo.ModTime() ||
-					currentFileInfo.Size() < offset { // 如果新大小 < 旧偏移，必定替换
-					mm.logger.Infof("The %s file replacement (inode change: %d -> %d) was detected, and the monitoring was reset", logFile, initialInode, currentInode)
-					isFileChanged = true
-					fileChanged <- true
-					return
+				if !initialized {
+					// 初始化
+					lastInode = currentInode
+					lastFileInfo = currentFileInfo
+					initialized = true
+					continue
+				}
+				// 检查 inode、修改时间或大小
+				if currentInode != lastInode ||
+					currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
+					currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
+					mm.logger.Infof("A reset is triggered when a %s file replacement (inode: %d -> %d) or status change is detected", logFile, lastInode, currentInode)
+					select {
+					case fileChanged <- true:
+					default: // 避免阻塞
+					}
+					lastInode = currentInode
+					lastFileInfo = currentFileInfo
 				}
 			}
 		}
@@ -286,19 +283,38 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 	for {
 		select {
 		case <-ctx.Done():
+			mm.logger.Infof("Context cancellation, stop monitoring %s", logFile)
+			checkWg.Wait()
 			return
 		default:
-			// 获取初始文件信息和 inode
-			initialInode, err = mm.getInode(logFile)
-			if err != nil {
-				mm.logger.Errorf("The initial inode of %s cannot be obtained: %v", logFile, err)
-				return
+			var offset int64
+			var err error
+
+			// 确定起始偏移量
+			offset = mm.offsetStore.Get(logFile)
+			if lastStartLine > 0 {
+				// 根据末尾起始行数计算偏移量
+				offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
+				if err != nil {
+					mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
+					time.Sleep(retryDelay)
+					continue
+				}
+			} else if offset == 0 {
+				offset, err = mm.getLastNLinesOffset(logFile, lastStartLine)
+				if err != nil {
+					mm.logger.Errorf("The last starting line offset of %s cannot be calculated: %v", logFile, err)
+					time.Sleep(retryDelay)
+					continue
+				}
 			}
 
-			initialFileInfo, err = os.Stat(logFile)
+			// 获取初始文件信息和 inode
+			initialInode, err := mm.getInode(logFile)
 			if err != nil {
-				mm.logger.Errorf("Failed to get initial file info for %s: %v", logFile, err)
-				return
+				mm.logger.Errorf("The initial inode of %s cannot be obtained: %v", logFile, err)
+				time.Sleep(retryDelay)
+				continue
 			}
 
 			var t *tail.Tail
@@ -309,11 +325,13 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					ReOpen:    true,
 					MustExist: true,
 					Location:  &tail.SeekInfo{Offset: offset, Whence: io.SeekStart},
+					Poll:      true,
 				})
 				if err != nil {
 					mm.logger.Errorf("Try %d: Unable to tail file %s: %v", attempt, logFile, err)
 					if attempt == maxRetries {
-						return
+						time.Sleep(retryDelay)
+						continue
 					}
 					time.Sleep(retryDelay)
 					continue
@@ -322,9 +340,9 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 				break
 			}
 			if !retrySuccess {
-				return
+				time.Sleep(retryDelay)
+				continue
 			}
-			defer t.Cleanup()
 
 			mm.logger.Infof("Monitoring file: %s", logFile)
 
@@ -342,11 +360,15 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					if err = mm.offsetStore.Save(); err != nil {
 						mm.logger.Errorf("Failed to save offsets for %s: %v", logFile, err)
 					}
+
+					t.Cleanup()
+					checkWg.Wait()
 					return
 				case changed := <-fileChanged:
 					// 文件变化，重置偏移量并重新循环
 					if changed {
 						t.Stop()
+						t.Cleanup()
 						mm.offsetStore.Remove(logFile)
 						if err = mm.offsetStore.Save(); err != nil {
 							mm.logger.Errorf("The offset cannot be saved: %v", err)
@@ -354,20 +376,32 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 						offset = 0
 						lastStartLine = 0
 						mm.logger.Infof("Reset the %s offset to 0 and restart the monitoring", logFile)
-						isFileChanged = false
 						break innerLoop
 					}
 				case line, ok := <-t.Lines:
 					if !ok {
 						mm.logger.Warnf("Tail channel closed for %s", logFile)
 						// 额外检查文件变化
-						currentInode, _ := mm.getInode(logFile)
-						if currentInode != initialInode {
-							isFileChanged = true
-							fileChanged <- true
+						currentInode, err := mm.getInode(logFile)
+						if err != nil || currentInode != initialInode {
+							select {
+							case fileChanged <- true:
+							default:
+							}
 							continue
 						}
-						return
+
+						if _, err = t.Tell(); err != nil {
+							mm.logger.Warnf("The tail handle is invalid for %s, triggering a reset", logFile)
+							select {
+							case fileChanged <- true:
+							default:
+							}
+							continue
+						}
+
+						t.Cleanup()
+						break innerLoop
 					}
 					if line.Err != nil {
 						mm.logger.Errorf("Error reading line from %s: %v", logFile, line.Err)
@@ -382,6 +416,10 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					offset, err = t.Tell()
 					if err != nil {
 						mm.logger.Errorf("Failed to get offset for %s: %v", logFile, err)
+						select {
+						case fileChanged <- true:
+						default:
+						}
 						continue
 					}
 					mm.offsetStore.Set(logFile, offset)
@@ -502,8 +540,20 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					} else {
 						mm.logger.Infof("Sent to Lark for %s", logFile)
 					}
+				case <-time.After(tailTimeout):
+					mm.logger.Debugf("tail timeout check for %s", logFile)
+					if _, err := t.Tell(); err != nil {
+						mm.logger.Warnf("The tail handle is invalid for %s: %v，Trigger reset", logFile, err)
+						select {
+						case fileChanged <- true:
+						default:
+						}
+						continue
+					}
 				}
 			}
+
+			t.Cleanup()
 		}
 	}
 }
