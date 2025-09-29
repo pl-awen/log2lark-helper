@@ -237,7 +237,7 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
 		var lastInode uint64
-		var lastFileInfo os.FileInfo
+		//var lastFileInfo os.FileInfo
 		var initialized bool
 
 		for {
@@ -252,29 +252,30 @@ func (mm *MonitorManager) monitorLogFile(ctx context.Context, logFile string, la
 					mm.logger.Warnf("An error occurred when checking the %s node: %v", logFile, err)
 					continue
 				}
-				currentFileInfo, err := os.Stat(logFile)
-				if err != nil {
-					mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
-					continue
-				}
+				//currentFileInfo, err := os.Stat(logFile)
+				//if err != nil {
+				//	mm.logger.Warnf("An error occurred when checking the information of the %s file: %v", logFile, err)
+				//	continue
+				//}
 				if !initialized {
 					// 初始化
 					lastInode = currentInode
-					lastFileInfo = currentFileInfo
+					//lastFileInfo = currentFileInfo
 					initialized = true
 					continue
 				}
 				// 检查 inode、修改时间或大小
-				if currentInode != lastInode ||
-					currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
-					currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
+				//if currentInode != lastInode ||
+				//	currentFileInfo.ModTime() != lastFileInfo.ModTime() ||
+				//	currentFileInfo.Size() < mm.offsetStore.Get(logFile) {
+				if currentInode != lastInode {
 					mm.logger.Infof("A reset is triggered when a %s file replacement (inode: %d -> %d) or status change is detected", logFile, lastInode, currentInode)
 					select {
 					case fileChanged <- true:
 					default: // 避免阻塞
 					}
 					lastInode = currentInode
-					lastFileInfo = currentFileInfo
+					//lastFileInfo = currentFileInfo
 				}
 			}
 		}
