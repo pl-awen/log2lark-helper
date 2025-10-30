@@ -146,7 +146,7 @@ func (app *App) Start() {
 		}(ctx, dir, &wg)
 	}
 
-	logrus.Info("Log monitor started")
+	logrus.Info("Log monitor started ...")
 	wg.Wait()
 	if err = offsetStore.Save(); err != nil {
 		logrus.Info("Save offsets to file failed: %v", err)
