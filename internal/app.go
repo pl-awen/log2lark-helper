@@ -68,7 +68,7 @@ func (app *App) Start() {
 	sigManager := NewSignatureManager(app.config.WebhookSecret)
 
 	logger := logrus.New()
-	logger.Info("Starting log monitor...")
+	logger.Info("Starting log monitor ...")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
