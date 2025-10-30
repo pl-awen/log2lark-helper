@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+// ^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})
+// ^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(\w+)\s+(\{.*)
 func main() {
 	// 解析命令行参数
 	logFiles := flag.String("log-files", "", "Comma-separated log file paths (e.g., /var/log/app1.log,/var/log/app2.log)")
@@ -22,7 +24,7 @@ func main() {
 	offsetFile := flag.String("offset-file", "monitoring_offset.json", "File to store log offsets")
 	includeRegex := flag.String("include-regex", ``, "Regular expression to include log lines")
 	excludeRegex := flag.String("exclude-regex", ``, "Regular expression to exclude log lines")
-	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w+)\s+(\{.*\})`, "Regular expression to parse log line")
+	logRegex := flag.String("log-regex", `^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(\w+)\s+(\{.*)`, "Regular expression to parse log line")
 	jsonPartContentIndex := flag.String("json-part-content-index", "#3", "Regular expressions match the content index in json format")
 	levelFieldIndex := flag.String("level-field-index", "#2", "Level index of regular expression matching")
 	messageFormat := flag.String("message-format", "🚨 错误日志告警\n文件: {file}\n时间: {#1}\n级别: {level}\n服务: {service_id}\n错误信息: {msg}\n调用者: {caller}\nTraceID: {trace_id}\nSpanID: {span_id}\n", "Message format template")

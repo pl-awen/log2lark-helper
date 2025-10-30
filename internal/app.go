@@ -17,6 +17,7 @@ type AppConfig struct {
 	WatchDirs              []string
 	WatchDirFileSuffixList []string
 	WebhookURL             string
+	LokiURL                string
 	WebhookSecret          string
 	LastStartLines         []int
 	CacheTimeSecond        int
@@ -88,6 +89,13 @@ func (app *App) Start() {
 	// 发送飞书
 	sendLarkManager := NewSendToLarkManager(app.config.WebhookURL, sigManager)
 
+	// 发送 Loki
+	sendLokiManager, err := NewSendToLokiManager(app.config.LokiURL)
+	if err != nil {
+		logrus.Errorf("Failed to create loki client: %v", err)
+	}
+	defer sendLokiManager.stop()
+
 	// 缓存
 	var memoryCache *MemoryCache
 	if app.config.CacheTimeSecond > 0 {
@@ -125,7 +133,7 @@ func (app *App) Start() {
 		mparms.IncludeRe = includeRe
 	}
 
-	monitorManager := NewMonitorManager(mparms, sendLarkManager, offsetStore, memoryCache, logger)
+	monitorManager := NewMonitorManager(mparms, sendLarkManager, sendLokiManager, offsetStore, memoryCache, logger)
 
 	// 启动文件监控
 	var wg sync.WaitGroup
